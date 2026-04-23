@@ -1,0 +1,1 @@
+{"system_prompt": "assume python libraries are installed\nuse sandbox id bb3d5b65-30b7-4706-b90b-e8b994dad7c4\nuse list_sandboxes when in doubt", "enabled_tools": ["list_sandboxes", "install_package_in_sandbox", "execute_python_code"]}
