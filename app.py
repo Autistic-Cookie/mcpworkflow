@@ -53,11 +53,26 @@ st.set_page_config(page_title="MCP Tool-Calling Demo", layout="wide")
 # Load persistent settings
 settings = load_settings()
 
-# Session State for Current Conversation
+# Session State for Current Conversation and Partial Progress
 if "current_conv_id" not in st.session_state:
     st.session_state.current_conv_id = str(uuid.uuid4())
 if "messages" not in st.session_state:
     st.session_state.messages = []
+if "partial_msg" not in st.session_state:
+    st.session_state.partial_msg = None
+
+# ... (rest of loading settings and layout) ...
+
+# Handle Interruption/Recovery from partial progress
+if st.session_state.get("partial_msg"):
+    p = st.session_state.partial_msg
+    # If partial_msg exists at script start, it means the last run didn't finish
+    p["content"] = (p.get("content") or "") + " \n\n **[🛑 INTERRUPTED BY USER]**"
+    p["interrupted"] = True
+    st.session_state.messages.append(p)
+    save_conversation(st.session_state.current_conv_id, st.session_state.messages)
+    # Clear it so we don't handle it again on next rerun
+    st.session_state.partial_msg = None
 
 # Layout: Main Chat (Left) and History (Right)
 main_col, history_col = st.columns([0.75, 0.25])
@@ -164,12 +179,14 @@ with main_col:
         if content or reasoning:
             with st.chat_message(role):
                 if reasoning:
-                    with st.expander("Model's Thinking Process", expanded=False):
+                    # Expand if it was interrupted or it's the very last message in the thread
+                    is_interrupted = message.get("interrupted", False)
+                    is_last = (message == st.session_state.messages[-1])
+                    with st.expander("Model's Thinking Process", expanded=(is_interrupted or is_last)):
                         st.write(reasoning)
                 if content:
                     st.markdown(content)
-        
-        if "tool_calls" in message:
+        if message.get("tool_calls"):
             with st.chat_message("assistant"):
                 for tc in message["tool_calls"]:
                     st.info(f"Tool Call: {tc['function']['name']}({tc['function']['arguments']})")
@@ -192,33 +209,83 @@ if prompt := st.chat_input("Ask a question that might use tools..."):
 
         # Thinking state
         with st.chat_message("assistant"):
+            if st.button("🛑 Stop Generation"):
+                # Simply stopping will trigger the recovery logic at the top of the script on next run
+                st.stop()
+                
             with st.status("Thinking...") as status:
                 while True:
                     # Prepare message list with System Prompt
                     full_messages = [{"role": "system", "content": current_sys_prompt}] + st.session_state.messages
                     
-                    # LLM Inference
-                    response = st.session_state.llm_client.get_chat_completion(
-                        full_messages,
-                        active_tools
-                    )
+                    # Streaming LLM Inference
+                    content = ""
+                    reasoning = ""
+                    tool_calls_map = {}
                     
-                    if "error" in response:
-                        st.error(f"Error: {response['error']}")
-                        break
+                    r_placeholder = st.empty()
+                    c_placeholder = st.empty()
 
-                    message = response["choices"][0]["message"]
-                    # Store message in history
+                    # Initialize partial progress
+                    st.session_state.partial_msg = {
+                        "role": "assistant",
+                        "content": "",
+                        "reasoning_content": "",
+                        "tool_calls": None
+                    }
+
+                    for chunk in st.session_state.llm_client.stream_chat_completion(full_messages, active_tools):
+                        if "error" in chunk:
+                            st.error(f"Error: {chunk['error']}")
+                            st.session_state.partial_msg = None
+                            break
+                        
+                        if not chunk.get("choices"): continue
+                        delta = chunk["choices"][0].get("delta", {})
+                        
+                        # Accumulate Reasoning
+                        if "reasoning_content" in delta:
+                            reasoning += delta["reasoning_content"]
+                            with r_placeholder.container():
+                                with st.expander("Model's Thinking Process", expanded=True):
+                                    st.write(reasoning)
+                        
+                        # Accumulate Content
+                        if "content" in delta and delta["content"]:
+                            content += delta["content"]
+                            c_placeholder.markdown(content)
+                            
+                        # Accumulate Tool Calls
+                        if "tool_calls" in delta:
+                            for tc_delta in delta["tool_calls"]:
+                                index = tc_delta["index"]
+                                if index not in tool_calls_map:
+                                    tool_calls_map[index] = {
+                                        "id": tc_delta.get("id"),
+                                        "type": "function",
+                                        "function": {"name": "", "arguments": ""}
+                                    }
+                                f_delta = tc_delta.get("function", {})
+                                if f_delta.get("name"):
+                                    tool_calls_map[index]["function"]["name"] += f_delta["name"]
+                                if f_delta.get("arguments"):
+                                    tool_calls_map[index]["function"]["arguments"] += f_delta["arguments"]
+                        
+                        # Store partial progress
+                        st.session_state.partial_msg = {
+                            "role": "assistant",
+                            "content": content,
+                            "reasoning_content": reasoning,
+                            "tool_calls": list(tool_calls_map.values()) if tool_calls_map else None
+                        }
+
+                    # Finalize message
+                    message = st.session_state.partial_msg
                     st.session_state.messages.append(message)
+                    st.session_state.partial_msg = None # Generation finished successfully
                     
-                    # Live Thinking Output
-                    reasoning = st.session_state.llm_client.get_reasoning(response)
-                    if reasoning:
-                        with st.expander("Reasoning", expanded=True):
-                            st.write(reasoning)
-
                     # Check for tool calls
-                    tool_calls = st.session_state.llm_client.parse_tool_calls(response)
+                    tool_calls = message.get("tool_calls")
                     
                     if tool_calls:
                         status.update(label="Executing Tools...", state="running")
@@ -254,10 +321,9 @@ if prompt := st.chat_input("Ask a question that might use tools..."):
                         status.update(label="Thinking again...", state="running")
                         continue
                     else:
-                        final_text = st.session_state.llm_client.get_final_text(response)
+                        # Finalize
                         status.update(label="Done!", state="complete")
-                        if final_text:
-                            st.markdown(final_text)
+                        # No more tool calls, we are finished with this turn
                         break
         # Save the conversation after each response
         save_conversation(st.session_state.current_conv_id, st.session_state.messages)

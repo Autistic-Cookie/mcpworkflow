@@ -5,6 +5,47 @@ class LLMClient:
     def __init__(self, base_url="http://localhost:8080"):
         self.base_url = base_url
 
+    def stream_chat_completion(self, messages, tools=None):
+        url = f"{self.base_url}/v1/chat/completions"
+        
+        formatted_tools = []
+        if tools:
+            for tool in tools:
+                formatted_tools.append({
+                    "type": "function",
+                    "function": {
+                        "name": tool["name"],
+                        "description": tool.get("description", ""),
+                        "parameters": tool.get("inputSchema", {
+                            "type": "object",
+                            "properties": {}
+                        })
+                    }
+                })
+
+        payload = {
+            "messages": messages,
+            "model": "gpt-3.5-turbo",
+            "tools": formatted_tools if formatted_tools else None,
+            "tool_choice": "auto" if formatted_tools else None,
+            "stream": True
+        }
+        
+        try:
+            with httpx.stream("POST", url, json=payload, timeout=None) as response:
+                response.raise_for_status()
+                for line in response.iter_lines():
+                    if line.startswith("data: "):
+                        data = line[6:].strip()
+                        if data == "[DONE]":
+                            break
+                        try:
+                            yield json.loads(data)
+                        except json.JSONDecodeError:
+                            continue
+        except Exception as e:
+            yield {"error": str(e)}
+
     def get_chat_completion(self, messages, tools=None):
         url = f"{self.base_url}/v1/chat/completions"
         
@@ -33,7 +74,7 @@ class LLMClient:
         }
         
         try:
-            response = httpx.post(url, json=payload, timeout=60.0)
+            response = httpx.post(url, json=payload, timeout=None)
             response.raise_for_status()
             return response.json()
         except Exception as e:
