@@ -45,7 +45,7 @@ class LLMClient:
                             continue
         except Exception as e:
             yield {"error": str(e)}
-
+"""
     def get_chat_completion(self, messages, tools=None):
         url = f"{self.base_url}/v1/chat/completions"
         
@@ -98,3 +98,4 @@ class LLMClient:
         if "choices" in response and len(response["choices"]) > 0:
             return response["choices"][0].get("message", {}).get("content", "")
         return ""
+"""
