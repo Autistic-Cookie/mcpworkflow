@@ -1,93 +1,102 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -uo pipefail
 
-# Function to wait for a process to be ready by checking its log file
-wait_for_ready() {
-  local log_file=$1
-  local ready_string=$2
-  local timeout=${3:-300} # Default timeout 300 seconds
-  local count=0
+# ──────────────────────────────────────────────────────────────
+# Configuration
+# ──────────────────────────────────────────────────────────────
+WORK_DIR_MAIN="/home/mint/pysand/python-mcp-sandbox"
+LOG_MAIN="$WORK_DIR_MAIN/main.py.log"
+LOG_LLAMA="$WORK_DIR_MAIN/llama-server.log"
+STREAMLIT_DIR="/home/mint/cs/1"
+VENV_PYTHON="/home/mint/pvenv/bin/python"
+LLAMA_BIN="/home/mint/Downloads/cuda-12.8/llama-server"
+CONTAINER_NAME="python-sandbox-dcac81e6"
 
-  echo "Waiting for process to be ready (looking for '$ready_string' in $log_file)..."
-  while ! grep -q "$ready_string" "$log_file"; do
-    sleep 1
-    count=$((count + 1))
-    if [ $count -ge $timeout ]; then
-      echo "Timeout waiting for process to be ready."
-      exit 1
-    fi
-  done
-  echo "Process is ready."
-}
+# PIDs (initialized empty for safe cleanup)
+MAIN_PID=""
+LLAMA_PID=""
+STREAMLIT_PID=""
 
-# 0. Cleanup function to handle signals and exits
+# ──────────────────────────────────────────────────────────────
+# Cleanup & Signal Handling
+# ──────────────────────────────────────────────────────────────
 cleanup() {
-  echo ""
-  echo "Caught signal! Cleaning up processes..."
-  
-  # Stop Streamlit if it's still running (though usually foreground)
-  [ -n "$STREAMLIT_PID" ] && kill $STREAMLIT_PID 2>/dev/null
-  
-  # Kill main.py (sudo requires special handling or pkill)
-  echo "Stopping main.py..."
-  sudo pkill -f "uv run main.py"
-  
-  # Kill llama-server
-  echo "Stopping llama-server..."
-  [ -n "$LLAMA_PID" ] && kill $LLAMA_PID 2>/dev/null
-  pkill llama-server
-  
-  # Stop Docker
-  echo "Stopping Docker container..."
-  sudo docker stop python-sandbox-dcac81e6 >/dev/null 2>&1
-  
-  echo "Cleanup complete. Exiting."
-  exit
-}
+  echo -e "\n🛑 Caught signal! Cleaning up processes..."
 
-# Trap SIGINT (Ctrl+C), SIGTERM, and EXIT
+  [ -n "$STREAMLIT_PID" ] && kill "$STREAMLIT_PID" 2>/dev/null || true
+  [ -n "$MAIN_PID" ] && kill "$MAIN_PID" 2>/dev/null || true
+  [ -n "$LLAMA_PID" ] && kill "$LLAMA_PID" 2>/dev/null || true
+
+  # Fallback pkill (only if PIDs were lost)
+  pkill -f "uv run main.py" 2>/dev/null || true
+  pkill -f "llama-server" 2>/dev/null || true
+
+  echo "Stopping Docker container..."
+  docker stop "$CONTAINER_NAME" >/dev/null 2>&1 || true
+
+  echo "✅ Cleanup complete."
+  exit 0
+}
 trap cleanup SIGINT SIGTERM EXIT
 
-# 1. Start Docker container
-echo "Starting Docker container..."
-sudo docker start python-sandbox-dcac81e6
+# ──────────────────────────────────────────────────────────────
+# Helper: Wait for log string
+# ──────────────────────────────────────────────────────────────
+wait_for_ready() {
+  local log_file="$1" ready_string="$2" timeout="${3:-300}"
+  local count=0
 
+  echo "⏳ Waiting for '$ready_string' in $log_file (timeout: ${timeout}s)..."
+  while ! tail -n 50 "$log_file" 2>/dev/null | grep -q "$ready_string"; do
+    sleep 1
+    count=$((count + 1))
+    [ $count -ge $timeout ] && {
+      echo "❌ Timeout waiting for process to be ready."
+      exit 1
+    }
+  done
+  echo "✅ Process is ready."
+}
+
+# ──────────────────────────────────────────────────────────────
+# 1. Start Docker Container
+# ──────────────────────────────────────────────────────────────
+echo "🐳 Starting Docker container..."
+sudo docker start "$CONTAINER_NAME" || {
+  echo "❌ Docker start failed."
+  exit 1
+}
+sleep 2 # Give container time to initialize
+
+# ──────────────────────────────────────────────────────────────
 # 2. Start main.py
-echo "Starting main.py..."
-cd ~/pysand/python-mcp-sandbox/
-# Redirect output to a log file to check for readiness
-nohup sudo /home/linuxbrew/.linuxbrew/bin/uv run main.py >main.py.log 2>&1 &
+# ──────────────────────────────────────────────────────────────
+echo "🐍 Starting main.py..."
+cd "$WORK_DIR_MAIN"
+export PYTHONUNBUFFERED=1 # Prevents log buffering delays
+nohup sudo /home/linuxbrew/.linuxbrew/bin/uv run main.py >"$LOG_MAIN" 2>&1 &
 MAIN_PID=$!
+wait_for_ready "$LOG_MAIN" "Application startup complete"
 
-# Wait for main.py to be ready
-# IMPORTANT: Replace "ready" with a string that main.py actually prints when ready
-# (e.g., "listening on port", "MCP server started", etc.)
-wait_for_ready "/home/mint/pysand/python-mcp-sandbox/main.py.log" "Application startup complete"
-
+# ──────────────────────────────────────────────────────────────
 # 3. Start llama-server
-echo "Starting llama-server..."
-export LD_LIBRARY_PATH="/home/mint/Downloads/cuda-12.8/"
-nohup /home/mint/Downloads/cuda-12.8/llama-server \
-  -c 60000 \
-  -np 1 \
-  --webui-mcp-proxy \
-  --temp 0.05 \
-  --jinja \
-  -m /home/mint/.lmstudio/models/unsloth/Qwen3.6-35B-A3B-GGUF/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf \
-  --spec-type ngram-mod --spec-ngram-size-n 24 --draft-min 12 --draft-max 48 \
-  >llama-server.log 2>&1 &
+# ──────────────────────────────────────────────────────────────
+echo "🦙 Starting llama-server..."
+LD_LIBRARY_PATH="/home/mint/Downloads/cuda-12.8/" nohup "$LLAMA_BIN" \
+  -c 60000 -np 1 --webui-mcp-proxy --temp 0.6 --jinja \
+  -m "/home/mint/.lmstudio/models/unsloth/Qwen3.6-35B-A3B-GGUF/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf" \
+  --spec-type ngram-mod --spec-ngram-mod-n-match 24 --spec-draft-n-min 48 --spec-draft-n-max 64 \
+  >"$LOG_LLAMA" 2>&1 &
 LLAMA_PID=$!
+wait_for_ready "$LOG_LLAMA" "model loaded"
 
-# Wait for llama-server to be ready
-# llama-server typically prints "listening on port 8080" when ready
-wait_for_ready "/home/mint/pysand/python-mcp-sandbox/llama-server.log" "model loaded"
-
-# 4. Run streamlit
-echo "Starting Streamlit app..."
-source ~/pvenv/bin/activate
-cd ~/cs/1
-# Run streamlit in foreground, or background if we want to wait
-streamlit run app.py &
+# ──────────────────────────────────────────────────────────────
+# 4. Start Streamlit
+# ──────────────────────────────────────────────────────────────
+echo "🌊 Starting Streamlit app..."
+cd "$STREAMLIT_DIR"
+$VENV_PYTHON -m streamlit run app.py &
 STREAMLIT_PID=$!
 
-# Wait for streamlit to finish
-wait $STREAMLIT_PID
+# Keep script alive while Streamlit runs
+wait "$STREAMLIT_PID"
