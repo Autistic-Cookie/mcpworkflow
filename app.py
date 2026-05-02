@@ -1,9 +1,7 @@
 import streamlit as st
 import json
-import time
 import os
 import uuid
-import httpx
 from mcp_client import MCPClient
 from llm_client import LLMClient
 
@@ -40,9 +38,12 @@ def get_saved_conversations():
 
 def save_conversation(conv_id, messages):
     if not messages: return
-    title = messages[0]["content"][:30] + "..." if messages else "Untitled Chat"
+    # Filter out None messages before saving
+    clean_messages = [m for m in messages if m is not None]
+    if not clean_messages: return
+    title = clean_messages[0]["content"][:30] + "..." if clean_messages else "Untitled Chat"
     with open(os.path.join(CONV_DIR, f"{conv_id}.json"), "w") as f:
-        json.dump({"title": title, "messages": messages}, f)
+        json.dump({"title": title, "messages": clean_messages}, f)
 
 def delete_conversation(conv_id):
     path = os.path.join(CONV_DIR, f"{conv_id}.json")
@@ -63,6 +64,16 @@ if "partial_msg" not in st.session_state:
     st.session_state.partial_msg = None
 if "delete_id" not in st.session_state:
     st.session_state.delete_id = None
+if "last_error" not in st.session_state:
+    st.session_state.last_error = None
+
+# Display persistent error if any (Popup/Toast behavior)
+if st.session_state.last_error:
+    st.error(st.session_state.last_error)
+    st.toast(st.session_state.last_error, icon="⚠️")
+    if st.button("🗑️ Clear Error Message"):
+        st.session_state.last_error = None
+        st.rerun()
 
 # Handle Interruption/Recovery from partial progress
 if st.session_state.get("partial_msg"):
@@ -178,8 +189,9 @@ with main_col:
     if "llm_client" not in st.session_state:
         st.session_state.llm_client = LLMClient()
 
-    # Display chat history
+    # Display chat history (defensive check for None)
     for message in st.session_state.messages:
+        if message is None: continue
         role = message["role"]
         content = message.get("content", "")
         reasoning = message.get("reasoning_content", "")
@@ -187,9 +199,7 @@ with main_col:
         if content or reasoning:
             with st.chat_message(role):
                 if reasoning:
-                    is_interrupted = message.get("interrupted", False)
-                    is_last = (message == st.session_state.messages[-1])
-                    with st.expander("Model's Thinking Process", expanded=(is_interrupted or is_last or True)):
+                    with st.expander("Model's Thinking Process", expanded=True):
                         st.write(reasoning)
                 if content:
                     st.markdown(content)
@@ -210,6 +220,8 @@ with main_col:
 
 # Chat input
 if prompt := st.chat_input("Ask a question that might use tools..."):
+    # Reset last error on new input
+    st.session_state.last_error = None
     st.session_state.messages.append({"role": "user", "content": prompt})
     with main_col:
         with st.chat_message("user"):
@@ -237,10 +249,14 @@ if prompt := st.chat_input("Ask a question that might use tools..."):
                         "tool_calls": None
                     }
 
+                    has_llm_error = False
+                    error_msg = ""
                     for chunk in st.session_state.llm_client.stream_chat_completion(full_messages, active_tools):
                         if "error" in chunk:
-                            st.error(f"Error: {chunk['error']}")
-                            st.session_state.partial_msg = None
+                            error_msg = chunk["error"]
+                            # Persist error for display after rerun
+                            st.session_state.last_error = f"LLM Error: {error_msg}"
+                            has_llm_error = True
                             break
                         
                         if not chunk.get("choices"): continue
@@ -278,10 +294,19 @@ if prompt := st.chat_input("Ask a question that might use tools..."):
                             "tool_calls": list(tool_calls_map.values()) if tool_calls_map else None
                         }
 
+                    if has_llm_error:
+                        status.update(label="Inference Failed", state="error", expanded=True)
+                        st.session_state.partial_msg = None
+                        break
+
                     message = st.session_state.partial_msg
-                    st.session_state.messages.append(message)
-                    st.session_state.partial_msg = None
+                    if message:
+                        st.session_state.messages.append(message)
+                    st.session_state.partial_msg = None 
                     
+                    if not message:
+                        break
+
                     tool_calls = message.get("tool_calls")
                     
                     if tool_calls:
@@ -302,7 +327,7 @@ if prompt := st.chat_input("Ask a question that might use tools..."):
                                 with st.expander("View Tool Output", expanded=True):
                                     st.json(tool_result)
                             except Exception as e:
-                                st.error(f"Error: {e}")
+                                st.error(f"Tool Error: {e}")
                                 st.session_state.messages.append({
                                     "role": "tool",
                                     "tool_call_id": tc.get("id"),
