@@ -12,17 +12,42 @@ if not os.path.exists(CONV_DIR):
     os.makedirs(CONV_DIR)
 
 def load_settings():
+    default_prompts = ["You are a helpful assistant with access to tools. Use them when needed."]
     if os.path.exists(SETTINGS_FILE):
         try:
             with open(SETTINGS_FILE, "r") as f:
-                return json.load(f)
+                data = json.load(f)
+                # Migration: convert single prompt to list
+                if "system_prompt" in data:
+                    data["system_prompts"] = [data["system_prompt"]]
+                    del data["system_prompt"]
+                
+                if "system_prompts" not in data or not data["system_prompts"]:
+                    data["system_prompts"] = default_prompts
+                
+                if "selected_prompt_index" not in data:
+                    data["selected_prompt_index"] = 0
+                
+                if "tool_calling_enabled" not in data:
+                    data["tool_calling_enabled"] = True
+                return data
         except:
             pass
-    return {"system_prompt": "You are a helpful assistant with access to tools. Use them when needed.", "enabled_tools": None}
+    return {
+        "system_prompts": default_prompts,
+        "selected_prompt_index": 0,
+        "enabled_tools": None,
+        "tool_calling_enabled": True
+    }
 
-def save_settings(prompt, tools):
+def save_settings(prompts, selected_index, tools, tool_calling_enabled):
     with open(SETTINGS_FILE, "w") as f:
-        json.dump({"system_prompt": prompt, "enabled_tools": tools}, f)
+        json.dump({
+            "system_prompts": prompts,
+            "selected_prompt_index": selected_index,
+            "enabled_tools": tools,
+            "tool_calling_enabled": tool_calling_enabled
+        }, f)
 
 def get_saved_conversations():
     files = [f for f in os.listdir(CONV_DIR) if f.endswith(".json")]
@@ -90,16 +115,66 @@ main_col, history_col = st.columns([0.75, 0.25])
 # Sidebar for tool information and filtering
 with st.sidebar:
     st.header("LLM Configuration")
-    current_sys_prompt = st.text_area(
-        "System Prompt",
-        value=settings["system_prompt"],
-        height=100,
-        key="sys_prompt_input"
+    
+    # --- System Prompt Manager ---
+    st.subheader("System Prompts")
+    prompts = settings["system_prompts"]
+    sel_idx = settings["selected_prompt_index"]
+    
+    # Ensure index is valid
+    if sel_idx >= len(prompts): sel_idx = 0
+    
+    # Choose Prompt
+    selected_idx = st.selectbox(
+        "Choose Preset",
+        range(len(prompts)),
+        format_func=lambda i: prompts[i][:40].replace("\n", " ") + ("..." if len(prompts[i]) > 40 else ""),
+        index=sel_idx,
+        key="prompt_selector"
     )
     
+    # Edit/View Area
+    current_sys_prompt = st.text_area(
+        "Prompt Content",
+        value=prompts[selected_idx],
+        height=150,
+        key=f"sys_prompt_area_{selected_idx}"
+    )
+    
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        if st.button("➕ New", help="Add new preset"):
+            prompts.append("You are a helpful assistant.")
+            save_settings(prompts, len(prompts)-1, settings["enabled_tools"], settings["tool_calling_enabled"])
+            st.rerun()
+    with c2:
+        if st.button("💾 Save", help="Save changes to current preset"):
+            prompts[selected_idx] = current_sys_prompt
+            save_settings(prompts, selected_idx, settings["enabled_tools"], settings["tool_calling_enabled"])
+            st.toast("Preset updated!", icon="✅")
+    with c3:
+        if st.button("🗑️ Del", help="Delete current preset") and len(prompts) > 1:
+            del prompts[selected_idx]
+            new_idx = max(0, selected_idx - 1)
+            save_settings(prompts, new_idx, settings["enabled_tools"], settings["tool_calling_enabled"])
+            st.rerun()
+
+    # Handle dropdown change
+    if selected_idx != sel_idx:
+        save_settings(prompts, selected_idx, settings.get("enabled_tools"), settings.get("tool_calling_enabled"))
+        st.rerun()
+    
+    st.divider()
     st.header("MCP Configuration")
+    tool_calling_enabled = st.checkbox(
+        "Enable Tool Calling",
+        value=settings["tool_calling_enabled"],
+        key="tool_calling_enabled_input"
+    )
+
     if "tools" in st.session_state and st.session_state.tools:
         tool_names = [t['name'] for t in st.session_state.tools]
+
         saved_enabled = settings.get("enabled_tools")
         default_selection = saved_enabled if saved_enabled is not None else tool_names
         default_selection = [t for t in default_selection if t in tool_names]
@@ -108,25 +183,31 @@ with st.sidebar:
             "Enabled Tools",
             options=tool_names,
             default=default_selection,
-            key="enabled_tools_input"
+            key="enabled_tools_input",
+            disabled=not tool_calling_enabled
         )
-        
-        if current_sys_prompt != settings["system_prompt"] or current_enabled_tools != settings["enabled_tools"]:
-            save_settings(current_sys_prompt, current_enabled_tools)
-        
-        active_tools = [t for t in st.session_state.tools if t['name'] in current_enabled_tools]
-        
+
+        if (current_enabled_tools != settings.get("enabled_tools") or
+            tool_calling_enabled != settings.get("tool_calling_enabled")):
+            save_settings(prompts, selected_idx, current_enabled_tools, tool_calling_enabled)
+
+        if tool_calling_enabled:
+            active_tools = [t for t in st.session_state.tools if t['name'] in current_enabled_tools]
+        else:
+            active_tools = []
+
         st.divider()
         st.header("Available Tool Details")
         for tool in st.session_state.tools:
-            status = "✅" if tool['name'] in current_enabled_tools else "❌"
+            status = "✅" if (tool['name'] in current_enabled_tools and tool_calling_enabled) else "❌"
             with st.expander(f"{status} {tool['name']}"):
                 st.write(tool.get('description', "No description provided."))
     else:
         st.info("No tools loaded.")
         active_tools = []
-        if current_sys_prompt != settings["system_prompt"]:
-            save_settings(current_sys_prompt, settings.get("enabled_tools"))
+        if tool_calling_enabled != settings.get("tool_calling_enabled"):
+            save_settings(prompts, selected_idx, settings.get("enabled_tools"), tool_calling_enabled)
+
 
 # --- RIGHT PANEL: CONVERSATION HISTORY ---
 with history_col:
