@@ -4,13 +4,11 @@ import uuid
 import threading
 import queue
 import time
-from sseclient import SSEClient
 
 class MCPClient:
     def __init__(self, sse_url="http://localhost:8181/sse"):
         self.sse_url = sse_url
         self.post_url = None
-        self.session_id = None
         self.tools = []
         self.responses = {} # Map request_id to Queue
         self._sse_thread = None

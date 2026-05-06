@@ -2,6 +2,7 @@ import streamlit as st
 import json
 import os
 import uuid
+import time
 from mcp_client import MCPClient
 from llm_client import LLMClient
 
@@ -53,22 +54,31 @@ def get_saved_conversations():
     files = [f for f in os.listdir(CONV_DIR) if f.endswith(".json")]
     convs = []
     for f in files:
+        path = os.path.join(CONV_DIR, f)
         try:
-            with open(os.path.join(CONV_DIR, f), "r") as file:
+            mtime = os.path.getmtime(path)
+            with open(path, "r") as file:
                 data = json.load(file)
-                convs.append({"id": f.replace(".json", ""), "title": data.get("title", "Untitled Chat")})
+                convs.append({
+                    "id": f.replace(".json", ""), 
+                    "title": data.get("title", "Untitled Chat"),
+                    "mtime": mtime
+                })
         except:
             pass
+    
+    # Sort by modification time, most recent first
+    convs.sort(key=lambda x: x["mtime"], reverse=True)
     return convs
 
-def save_conversation(conv_id, messages):
+def save_conversation(conv_id, messages, metrics=None):
     if not messages: return
     # Filter out None messages before saving
     clean_messages = [m for m in messages if m is not None]
     if not clean_messages: return
     title = clean_messages[0]["content"][:30] + "..." if clean_messages else "Untitled Chat"
     with open(os.path.join(CONV_DIR, f"{conv_id}.json"), "w") as f:
-        json.dump({"title": title, "messages": clean_messages}, f)
+        json.dump({"title": title, "messages": clean_messages, "metrics": metrics}, f)
 
 def delete_conversation(conv_id):
     path = os.path.join(CONV_DIR, f"{conv_id}.json")
@@ -106,7 +116,7 @@ if st.session_state.get("partial_msg"):
     p["content"] = (p.get("content") or "") + " \n\n **[🛑 INTERRUPTED BY USER]**"
     p["interrupted"] = True
     st.session_state.messages.append(p)
-    save_conversation(st.session_state.current_conv_id, st.session_state.messages)
+    save_conversation(st.session_state.current_conv_id, st.session_state.messages, st.session_state.get("last_metrics"))
     st.session_state.partial_msg = None
 
 # Layout: Main Chat (Left) and History (Right)
@@ -215,6 +225,7 @@ with history_col:
     if st.button("➕ New Chat", use_container_width=True):
         st.session_state.current_conv_id = str(uuid.uuid4())
         st.session_state.messages = []
+        st.session_state.last_metrics = None
         st.rerun()
 
     st.divider()
@@ -230,6 +241,7 @@ with history_col:
                     data = json.load(f)
                     st.session_state.current_conv_id = chat["id"]
                     st.session_state.messages = data["messages"]
+                    st.session_state.last_metrics = data.get("metrics")
                 st.rerun()
         with col2:
             if st.session_state.delete_id == chat["id"]:
@@ -240,6 +252,7 @@ with history_col:
                         if st.session_state.current_conv_id == chat["id"]:
                             st.session_state.current_conv_id = str(uuid.uuid4())
                             st.session_state.messages = []
+                            st.session_state.last_metrics = None
                         st.session_state.delete_id = None
                         st.rerun()
                 with c2:
@@ -298,129 +311,162 @@ with main_col:
                     st.json(json_content)
                 except:
                     st.code(content)
+    
+    # Display performance metrics for the last interaction
+    if "last_metrics" in st.session_state and st.session_state.last_metrics:
+        st.divider()
+        st.markdown(f"***{st.session_state.last_metrics}***")
 
 # Chat input
 if prompt := st.chat_input("Ask a question that might use tools..."):
     # Reset last error on new input
     st.session_state.last_error = None
     st.session_state.messages.append({"role": "user", "content": prompt})
+    
+    # Track performance metrics
+    start_time = time.time()
+    total_tokens = 0
+    
     with main_col:
         with st.chat_message("user"):
             st.markdown(prompt)
 
-        with st.chat_message("assistant"):
-            if st.button("🛑 Stop Generation"):
-                st.stop()
+        # Create a container for assistant's work to keep it above metrics
+        assistant_work_area = st.container()
+        
+        # Metrics placeholder at the absolute bottom of the main panel
+        st.divider()
+        metrics_placeholder = st.empty()
+
+        with assistant_work_area:
+            with st.chat_message("assistant"):
+                if st.button("🛑 Stop Generation"):
+                    st.stop()
                 
-            with st.status("Thinking...", expanded=True) as status:
-                while True:
-                    full_messages = [{"role": "system", "content": current_sys_prompt}] + st.session_state.messages
-                    
-                    content = ""
-                    reasoning = ""
-                    tool_calls_map = {}
-                    
-                    r_placeholder = st.empty()
-                    c_placeholder = st.empty()
+                with st.status("Thinking...", expanded=True) as status:
+                    while True:
+                        full_messages = [{"role": "system", "content": current_sys_prompt}] + st.session_state.messages
+                        
+                        content = ""
+                        reasoning = ""
+                        tool_calls_map = {}
+                        
+                        r_placeholder = st.empty()
+                        c_placeholder = st.empty()
 
-                    st.session_state.partial_msg = {
-                        "role": "assistant",
-                        "content": "",
-                        "reasoning_content": "",
-                        "tool_calls": None
-                    }
-
-                    has_llm_error = False
-                    error_msg = ""
-                    for chunk in st.session_state.llm_client.stream_chat_completion(full_messages, active_tools):
-                        if "error" in chunk:
-                            error_msg = chunk["error"]
-                            # Persist error for display after rerun
-                            st.session_state.last_error = f"LLM Error: {error_msg}"
-                            has_llm_error = True
-                            break
-                        
-                        if not chunk.get("choices"): continue
-                        delta = chunk["choices"][0].get("delta", {})
-                        
-                        if "reasoning_content" in delta:
-                            reasoning += delta["reasoning_content"]
-                            with r_placeholder.container():
-                                with st.expander("Model's Thinking Process", expanded=True):
-                                    st.write(reasoning)
-                        
-                        if "content" in delta and delta["content"]:
-                            content += delta["content"]
-                            c_placeholder.markdown(content)
-                            
-                        if "tool_calls" in delta:
-                            for tc_delta in delta["tool_calls"]:
-                                index = tc_delta["index"]
-                                if index not in tool_calls_map:
-                                    tool_calls_map[index] = {
-                                        "id": tc_delta.get("id"),
-                                        "type": "function",
-                                        "function": {"name": "", "arguments": ""}
-                                    }
-                                f_delta = tc_delta.get("function", {})
-                                if f_delta.get("name"):
-                                    tool_calls_map[index]["function"]["name"] += f_delta["name"]
-                                if f_delta.get("arguments"):
-                                    tool_calls_map[index]["function"]["arguments"] += f_delta["arguments"]
-                        
                         st.session_state.partial_msg = {
                             "role": "assistant",
-                            "content": content,
-                            "reasoning_content": reasoning,
-                            "tool_calls": list(tool_calls_map.values()) if tool_calls_map else None
+                            "content": "",
+                            "reasoning_content": "",
+                            "tool_calls": None
                         }
 
-                    if has_llm_error:
-                        status.update(label="Inference Failed", state="error", expanded=True)
-                        st.session_state.partial_msg = None
-                        break
+                        has_llm_error = False
+                        error_msg = ""
+                        for chunk in st.session_state.llm_client.stream_chat_completion(full_messages, active_tools):
+                            if "error" in chunk:
+                                error_msg = chunk["error"]
+                                # Persist error for display after rerun
+                                st.session_state.last_error = f"LLM Error: {error_msg}"
+                                has_llm_error = True
+                                break
+                            
+                            if not chunk.get("choices"): continue
 
-                    message = st.session_state.partial_msg
-                    if message:
-                        st.session_state.messages.append(message)
-                    st.session_state.partial_msg = None 
-                    
-                    if not message:
-                        break
+                            # Update metrics
+                            if "usage" in chunk and chunk["usage"]:
+                                total_tokens = chunk["usage"].get("total_tokens", total_tokens)
+                            else:
+                                # Estimate tokens: content or reasoning chunk usually = 1 token
+                                delta = chunk["choices"][0].get("delta", {})
+                                if delta.get("content") or delta.get("reasoning_content"):
+                                    total_tokens += 1
+                            
+                            elapsed = time.time() - start_time
+                            tps = total_tokens / elapsed if elapsed > 0 else 0
+                            st.session_state.last_metrics = f"⏱️ {elapsed:.1f}s | 🚀 {tps:.1f} t/s | 📦 {total_tokens} tokens"
+                            metrics_placeholder.markdown(f"***{st.session_state.last_metrics}***")
 
-                    tool_calls = message.get("tool_calls")
-                    
-                    if tool_calls:
-                        status.update(label="Executing Tools...", state="running", expanded=True)
-                        for tc in tool_calls:
-                            tool_name = tc["function"]["name"]
-                            args = json.loads(tc["function"]["arguments"])
-                            st.info(f"Executing: `{tool_name}`")
-                            try:
-                                tool_result = st.session_state.mcp_client.call_tool(tool_name, args)
-                                st.session_state.messages.append({
-                                    "role": "tool",
-                                    "tool_call_id": tc.get("id"),
-                                    "name": tool_name,
-                                    "content": json.dumps(tool_result)
-                                })
-                                st.success(f"Result from `{tool_name}`: Success")
-                                with st.expander("View Tool Output", expanded=True):
-                                    st.json(tool_result)
-                            except Exception as e:
-                                st.error(f"Tool Error: {e}")
-                                st.session_state.messages.append({
-                                    "role": "tool",
-                                    "tool_call_id": tc.get("id"),
-                                    "name": tool_name,
-                                    "content": json.dumps({"error": str(e)})
-                                })
+                            delta = chunk["choices"][0].get("delta", {})
+                            
+                            if "reasoning_content" in delta:
+                                reasoning += delta["reasoning_content"]
+                                with r_placeholder.container():
+                                    with st.expander("Model's Thinking Process", expanded=True):
+                                        st.write(reasoning)
+                            
+                            if "content" in delta and delta["content"]:
+                                content += delta["content"]
+                                c_placeholder.markdown(content)
+                                
+                            if "tool_calls" in delta:
+                                for tc_delta in delta["tool_calls"]:
+                                    index = tc_delta["index"]
+                                    if index not in tool_calls_map:
+                                        tool_calls_map[index] = {
+                                            "id": tc_delta.get("id"),
+                                            "type": "function",
+                                            "function": {"name": "", "arguments": ""}
+                                        }
+                                    f_delta = tc_delta.get("function", {})
+                                    if f_delta.get("name"):
+                                        tool_calls_map[index]["function"]["name"] += f_delta["name"]
+                                    if f_delta.get("arguments"):
+                                        tool_calls_map[index]["function"]["arguments"] += f_delta["arguments"]
+                            
+                            st.session_state.partial_msg = {
+                                "role": "assistant",
+                                "content": content,
+                                "reasoning_content": reasoning,
+                                "tool_calls": list(tool_calls_map.values()) if tool_calls_map else None
+                            }
+
+                        if has_llm_error:
+                            status.update(label="Inference Failed", state="error", expanded=True)
+                            st.session_state.partial_msg = None
+                            break
+
+                        message = st.session_state.partial_msg
+                        if message:
+                            st.session_state.messages.append(message)
+                        st.session_state.partial_msg = None 
                         
-                        status.update(label="Thinking again...", state="running", expanded=True)
-                        continue
-                    else:
-                        status.update(label="Done!", state="complete", expanded=True)
-                        break
+                        if not message:
+                            break
+
+                        tool_calls = message.get("tool_calls")
+                        
+                        if tool_calls:
+                            status.update(label="Executing Tools...", state="running", expanded=True)
+                            for tc in tool_calls:
+                                tool_name = tc["function"]["name"]
+                                args = json.loads(tc["function"]["arguments"])
+                                st.info(f"Executing: `{tool_name}`")
+                                try:
+                                    tool_result = st.session_state.mcp_client.call_tool(tool_name, args)
+                                    st.session_state.messages.append({
+                                        "role": "tool",
+                                        "tool_call_id": tc.get("id"),
+                                        "name": tool_name,
+                                        "content": json.dumps(tool_result)
+                                    })
+                                    st.success(f"Result from `{tool_name}`: Success")
+                                    with st.expander("View Tool Output", expanded=True):
+                                        st.json(tool_result)
+                                except Exception as e:
+                                    st.error(f"Tool Error: {e}")
+                                    st.session_state.messages.append({
+                                        "role": "tool",
+                                        "tool_call_id": tc.get("id"),
+                                        "name": tool_name,
+                                        "content": json.dumps({"error": str(e)})
+                                    })
+                            
+                            status.update(label="Thinking again...", state="running", expanded=True)
+                            continue
+                        else:
+                            status.update(label="Done!", state="complete", expanded=True)
+                            break
         
-        save_conversation(st.session_state.current_conv_id, st.session_state.messages)
+        save_conversation(st.session_state.current_conv_id, st.session_state.messages, st.session_state.get("last_metrics"))
         st.rerun()
