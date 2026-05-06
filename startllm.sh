@@ -84,11 +84,12 @@ wait_for_ready "$LOG_MAIN" "Application startup complete"
 echo "🦙 Starting llama-server..."
 LD_LIBRARY_PATH="/home/mint/Downloads/cuda-12.8/" nohup "$LLAMA_BIN" \
   -c 60000 -np 1 --webui-mcp-proxy --temp 0.6 --jinja \
-  -m "/home/mint/.lmstudio/models/unsloth/Qwen3.6-35B-A3B-GGUF/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf" \
+  -m "/home/mint/.lmstudio/models/lmstudio-community/gemma-4-26B-A4B-it-GGUF/gemma-4-26B-A4B-it-Q4_K_M.gguf" \
   --spec-type ngram-mod --spec-ngram-mod-n-match 24 --spec-draft-n-min 48 --spec-draft-n-max 64 \
   >"$LOG_LLAMA" 2>&1 &
 LLAMA_PID=$!
 wait_for_ready "$LOG_LLAMA" "model loaded"
+#  -m "/home/mint/.lmstudio/models/unsloth/Qwen3.6-35B-A3B-GGUF/Qwen3.6-35B-A3B-UD-IQ4_XS.gguf" \
 
 # ──────────────────────────────────────────────────────────────
 # 4. Start Streamlit
