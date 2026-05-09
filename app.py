@@ -95,6 +95,7 @@ st.markdown("""
     button[data-testid="baseButton-primary"],
     button[data-testid="baseButton-tertiary"],
     button[data-testid="stChatInputSubmitButton"],
+    div[data-testid="stPopover"] > button,
     div.stButton > button {
         height: 2.2rem !important;
         min-height: 2.2rem !important;
@@ -107,6 +108,29 @@ st.markdown("""
         justify-content: center !important;
         overflow: hidden !important;
         white-space: nowrap !important;
+    }
+
+    /* Position popover inside chat input */
+    [data-testid="stChatInput"] {
+        /* padding-left: 45px !important; */
+        /*padding-left: 0px !important;*/
+        top:780%;
+    }
+    
+    /* Target the popover container specifically when inside our input area */
+    div.upload-container {
+        /*position: fixed;*/
+        padding-left:100px;
+        /*left: calc(10% );*/ /* Adjust based on sidebar width (15%) and padding */
+        /*z-index: 100;*/
+        /*width: 40px;*/
+    }
+
+    @media (max-width: 68px) {
+        div.upload-container {
+            bottom: 2px;
+        padding-left:100px;
+        }
     }
 </style>
 """, unsafe_allow_html=True)
@@ -181,17 +205,17 @@ with st.sidebar:
         
         c1, c2, c3 = st.columns(3)
         with c1:
-            if st.button("➕ New", help="Add new preset"):
+            if st.button("➕ New", help="Add new preset",type="tertiary"):
                 prompts.append("You are a helpful assistant.")
                 save_settings(prompts, len(prompts)-1, settings["enabled_tools"], settings["tool_calling_enabled"])
                 st.rerun()
         with c2:
-            if st.button("💾 Save", help="Save changes to current preset"):
+            if st.button("💾 Save", help="Save changes to current preset",type="tertiary"):
                 prompts[selected_idx] = current_sys_prompt
                 save_settings(prompts, selected_idx, settings["enabled_tools"], settings["tool_calling_enabled"])
                 st.toast("Preset updated!", icon="✅")
         with c3:
-            if st.button("🗑️ Del", help="Delete current preset") and len(prompts) > 1:
+            if st.button("🗑️ Del", help="Delete current preset",type="tertiary") and len(prompts) > 1:
                 del prompts[selected_idx]
                 new_idx = max(0, selected_idx - 1)
                 save_settings(prompts, new_idx, settings["enabled_tools"], settings["tool_calling_enabled"])
@@ -248,7 +272,7 @@ with st.sidebar:
 # --- history_tab: CONVERSATION HISTORY ---
     with history_tab:
         st.header("📜 Past Chats")
-        if st.button("➕ New Chat", use_container_width=True):
+        if st.button("➕ New Chat", use_container_width=True,type="tertiary"):
             st.session_state.current_conv_id = str(uuid.uuid4())
             st.session_state.messages = []
             st.session_state.last_metrics = None
@@ -262,7 +286,7 @@ with st.sidebar:
         for chat in saved_chats:
             col1, col2 = st.columns([0.7, 0.3])
             with col1:
-                if st.button(chat["title"], key=f"load_{chat['id']}", use_container_width=True):
+                if st.button(chat["title"], key=f"load_{chat['id']}", use_container_width=True,type="tertiary"):
                     with open(os.path.join(CONV_DIR, f"{chat['id']}.json"), "r") as f:
                         data = json.load(f)
                         st.session_state.current_conv_id = chat["id"]
@@ -273,7 +297,7 @@ with st.sidebar:
                 if st.session_state.delete_id == chat["id"]:
                     c1, c2 = st.columns(2)
                     with c1:
-                        if st.button("✅", key=f"conf_{chat['id']}", help="Confirm Delete"):
+                        if st.button("✅", key=f"conf_{chat['id']}", help="Confirm Delete",type="tertiary"):
                             delete_conversation(chat["id"])
                             if st.session_state.current_conv_id == chat["id"]:
                                 st.session_state.current_conv_id = str(uuid.uuid4())
@@ -282,11 +306,11 @@ with st.sidebar:
                             st.session_state.delete_id = None
                             st.rerun()
                     with c2:
-                        if st.button("❌", key=f"canc_{chat['id']}", help="Cancel"):
+                        if st.button("❌", key=f"canc_{chat['id']}", help="Cancel",type="tertiary"):
                             st.session_state.delete_id = None
                             st.rerun()
                 else:
-                    if st.button("🗑️", key=f"del_{chat['id']}", help="Delete Conversation"):
+                    if st.button("🗑️", key=f"del_{chat['id']}", help="Delete Conversation",type="tertiary"):
                         st.session_state.delete_id = chat["id"]
                         st.rerun()
 
@@ -322,7 +346,13 @@ with main_col:
                     with st.expander("Model's Thinking Process", expanded=True):
                         st.write(reasoning)
                 if content:
-                    st.markdown(content)
+                    if "--- Attached Files ---" in content and "\n\nUser Message: " in content:
+                        parts = content.split("\n\nUser Message: ", 1)
+                        with st.expander("📎 Attached Files", expanded=False):
+                            st.code(parts[0].replace("--- Attached Files ---\n", ""))
+                        st.markdown(parts[1])
+                    else:
+                        st.markdown(content)
         
         if message.get("tool_calls"):
             with st.chat_message("assistant"):
@@ -344,11 +374,40 @@ with main_col:
         st.markdown(f"***{st.session_state.last_metrics}*** [↑ Back to Top](#top)")
         #st.markdown("[↑ Back to Top](#top)")
 
-# Chat input
-if prompt := st.chat_input("Ask a question that might use tools..."):
+# Chat input and File Upload
+with main_col:
+    prompt = st.chat_input("Ask a question that might use tools...")
+    # Use a div container for the upload button to position it via CSS
+    #st.markdown('<div class="upload-container">', unsafe_allow_html=True)
+    with st.popover("📎", help="Upload files for context",type="tertiary"):
+        uploaded_files = st.file_uploader("Upload files", accept_multiple_files=True, key="file_uploader")
+    #st.markdown('</div>', unsafe_allow_html=True)
+    
+if prompt:
     # Reset last error on new input
     st.session_state.last_error = None
-    st.session_state.messages.append({"role": "user", "content": prompt})
+    
+    # Process uploaded files
+    file_context = ""
+    if st.session_state.get("file_uploader"):
+        file_data = []
+        for f in st.session_state.file_uploader:
+            try:
+                f.seek(0)
+                content = f.read().decode("utf-8")
+                file_data.append(f"File: {f.name}\n---\n{content}")
+            except Exception as e:
+                file_data.append(f"File: {f.name} (Error reading: {e})")
+        
+        if file_data:
+            file_context = "--- Attached Files ---\n" + "\n\n".join(file_data)
+    
+    if file_context:
+        full_content = f"{file_context}\n\nUser Message: {prompt}"
+    else:
+        full_content = prompt
+
+    st.session_state.messages.append({"role": "user", "content": full_content})
     
     # Track performance metrics
     start_time = time.time()
@@ -367,7 +426,7 @@ if prompt := st.chat_input("Ask a question that might use tools..."):
 
         with assistant_work_area:
             with st.chat_message("assistant"):
-                if st.button("🛑 Stop Generation"):
+                if st.button("🛑 Stop Generation",type="tertiary"):
                     st.stop()
                 
                 with st.status("Thinking...", expanded=True) as status:
