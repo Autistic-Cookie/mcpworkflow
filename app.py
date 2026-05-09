@@ -119,155 +119,157 @@ if st.session_state.get("partial_msg"):
     save_conversation(st.session_state.current_conv_id, st.session_state.messages, st.session_state.get("last_metrics"))
     st.session_state.partial_msg = None
 
-# Layout: Main Chat (Left) and History (Right)
-main_col, history_col = st.columns([0.75, 0.25])
+# Layout: Main Chat (Left) and History (Right), history_col is empty
+main_col, history_col = st.columns([0.85, 0.15])
 
 # Sidebar for tool information and filtering
 with st.sidebar:
-    st.header("LLM Configuration")
-    
-    # --- System Prompt Manager ---
-    st.subheader("System Prompts")
-    prompts = settings["system_prompts"]
-    sel_idx = settings["selected_prompt_index"]
-    
-    # Ensure index is valid
-    if sel_idx >= len(prompts): sel_idx = 0
-    
-    # Choose Prompt
-    selected_idx = st.selectbox(
-        "Choose Preset",
-        range(len(prompts)),
-        format_func=lambda i: prompts[i][:40].replace("\n", " ") + ("..." if len(prompts[i]) > 40 else ""),
-        index=sel_idx,
-        key="prompt_selector"
-    )
-    
-    # Edit/View Area
-    current_sys_prompt = st.text_area(
-        "Prompt Content",
-        value=prompts[selected_idx],
-        height=150,
-        key=f"sys_prompt_area_{selected_idx}"
-    )
-    
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        if st.button("➕ New", help="Add new preset"):
-            prompts.append("You are a helpful assistant.")
-            save_settings(prompts, len(prompts)-1, settings["enabled_tools"], settings["tool_calling_enabled"])
+
+    settings_tab, history_tab = st.tabs(["Settings","History"])
+
+    with settings_tab:
+        st.header("LLM Configuration")
+        
+        # --- System Prompt Manager ---
+        st.subheader("System Prompts")
+        prompts = settings["system_prompts"]
+        sel_idx = settings["selected_prompt_index"]
+        
+        # Ensure index is valid
+        if sel_idx >= len(prompts): sel_idx = 0
+        
+        # Choose Prompt
+        selected_idx = st.selectbox(
+            "Choose Preset",
+            range(len(prompts)),
+            format_func=lambda i: prompts[i][:40].replace("\n", " ") + ("..." if len(prompts[i]) > 40 else ""),
+            index=sel_idx,
+            key="prompt_selector"
+        )
+        
+        # Edit/View Area
+        current_sys_prompt = st.text_area(
+            "Prompt Content",
+            value=prompts[selected_idx],
+            height=150,
+            key=f"sys_prompt_area_{selected_idx}"
+        )
+        
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            if st.button("➕ New", help="Add new preset"):
+                prompts.append("You are a helpful assistant.")
+                save_settings(prompts, len(prompts)-1, settings["enabled_tools"], settings["tool_calling_enabled"])
+                st.rerun()
+        with c2:
+            if st.button("💾 Save", help="Save changes to current preset"):
+                prompts[selected_idx] = current_sys_prompt
+                save_settings(prompts, selected_idx, settings["enabled_tools"], settings["tool_calling_enabled"])
+                st.toast("Preset updated!", icon="✅")
+        with c3:
+            if st.button("🗑️ Del", help="Delete current preset") and len(prompts) > 1:
+                del prompts[selected_idx]
+                new_idx = max(0, selected_idx - 1)
+                save_settings(prompts, new_idx, settings["enabled_tools"], settings["tool_calling_enabled"])
+                st.rerun()
+
+        # Handle dropdown change
+        if selected_idx != sel_idx:
+            save_settings(prompts, selected_idx, settings.get("enabled_tools"), settings.get("tool_calling_enabled"))
             st.rerun()
-    with c2:
-        if st.button("💾 Save", help="Save changes to current preset"):
-            prompts[selected_idx] = current_sys_prompt
-            save_settings(prompts, selected_idx, settings["enabled_tools"], settings["tool_calling_enabled"])
-            st.toast("Preset updated!", icon="✅")
-    with c3:
-        if st.button("🗑️ Del", help="Delete current preset") and len(prompts) > 1:
-            del prompts[selected_idx]
-            new_idx = max(0, selected_idx - 1)
-            save_settings(prompts, new_idx, settings["enabled_tools"], settings["tool_calling_enabled"])
-            st.rerun()
-
-    # Handle dropdown change
-    if selected_idx != sel_idx:
-        save_settings(prompts, selected_idx, settings.get("enabled_tools"), settings.get("tool_calling_enabled"))
-        st.rerun()
-    
-    st.divider()
-    st.header("MCP Configuration")
-    tool_calling_enabled = st.checkbox(
-        "Enable Tool Calling",
-        value=settings["tool_calling_enabled"],
-        key="tool_calling_enabled_input"
-    )
-
-    if "tools" in st.session_state and st.session_state.tools:
-        tool_names = [t['name'] for t in st.session_state.tools]
-
-        saved_enabled = settings.get("enabled_tools")
-        default_selection = saved_enabled if saved_enabled is not None else tool_names
-        default_selection = [t for t in default_selection if t in tool_names]
-
-        current_enabled_tools = st.multiselect(
-            "Enabled Tools",
-            options=tool_names,
-            default=default_selection,
-            key="enabled_tools_input",
-            disabled=not tool_calling_enabled
+        
+        st.divider()
+        st.header("MCP Configuration")
+        tool_calling_enabled = st.checkbox(
+            "Enable Tool Calling",
+            value=settings["tool_calling_enabled"],
+            key="tool_calling_enabled_input"
         )
 
-        if (current_enabled_tools != settings.get("enabled_tools") or
-            tool_calling_enabled != settings.get("tool_calling_enabled")):
-            save_settings(prompts, selected_idx, current_enabled_tools, tool_calling_enabled)
+        if "tools" in st.session_state and st.session_state.tools:
+            tool_names = [t['name'] for t in st.session_state.tools]
 
-        if tool_calling_enabled:
-            active_tools = [t for t in st.session_state.tools if t['name'] in current_enabled_tools]
+            saved_enabled = settings.get("enabled_tools")
+            default_selection = saved_enabled if saved_enabled is not None else tool_names
+            default_selection = [t for t in default_selection if t in tool_names]
+
+            current_enabled_tools = st.multiselect(
+                "Enabled Tools",
+                options=tool_names,
+                default=default_selection,
+                key="enabled_tools_input",
+                disabled=not tool_calling_enabled
+            )
+
+            if (current_enabled_tools != settings.get("enabled_tools") or
+                tool_calling_enabled != settings.get("tool_calling_enabled")):
+                save_settings(prompts, selected_idx, current_enabled_tools, tool_calling_enabled)
+
+            if tool_calling_enabled:
+                active_tools = [t for t in st.session_state.tools if t['name'] in current_enabled_tools]
+            else:
+                active_tools = []
+
+            st.divider()
+            st.header("Available Tool Details")
+            for tool in st.session_state.tools:
+                status = "✅" if (tool['name'] in current_enabled_tools and tool_calling_enabled) else "❌"
+                with st.expander(f"{status} {tool['name']}"):
+                    st.write(tool.get('description', "No description provided."))
         else:
+            st.info("No tools loaded.")
             active_tools = []
+            if tool_calling_enabled != settings.get("tool_calling_enabled"):
+                save_settings(prompts, selected_idx, settings.get("enabled_tools"), tool_calling_enabled)
+# --- history_tab: CONVERSATION HISTORY ---
+    with history_tab:
+        st.header("📜 Past Chats")
+        if st.button("➕ New Chat", use_container_width=True):
+            st.session_state.current_conv_id = str(uuid.uuid4())
+            st.session_state.messages = []
+            st.session_state.last_metrics = None
+            st.rerun()
 
         st.divider()
-        st.header("Available Tool Details")
-        for tool in st.session_state.tools:
-            status = "✅" if (tool['name'] in current_enabled_tools and tool_calling_enabled) else "❌"
-            with st.expander(f"{status} {tool['name']}"):
-                st.write(tool.get('description', "No description provided."))
-    else:
-        st.info("No tools loaded.")
-        active_tools = []
-        if tool_calling_enabled != settings.get("tool_calling_enabled"):
-            save_settings(prompts, selected_idx, settings.get("enabled_tools"), tool_calling_enabled)
-
-
-# --- RIGHT PANEL: CONVERSATION HISTORY ---
-with history_col:
-    st.header("📜 Past Chats")
-    if st.button("➕ New Chat", use_container_width=True):
-        st.session_state.current_conv_id = str(uuid.uuid4())
-        st.session_state.messages = []
-        st.session_state.last_metrics = None
-        st.rerun()
-
-    st.divider()
-    saved_chats = get_saved_conversations()
-    if not saved_chats:
-        st.info("No saved conversations.")
-    
-    for chat in saved_chats:
-        col1, col2 = st.columns([0.7, 0.3])
-        with col1:
-            if st.button(chat["title"], key=f"load_{chat['id']}", use_container_width=True):
-                with open(os.path.join(CONV_DIR, f"{chat['id']}.json"), "r") as f:
-                    data = json.load(f)
-                    st.session_state.current_conv_id = chat["id"]
-                    st.session_state.messages = data["messages"]
-                    st.session_state.last_metrics = data.get("metrics")
-                st.rerun()
-        with col2:
-            if st.session_state.delete_id == chat["id"]:
-                c1, c2 = st.columns(2)
-                with c1:
-                    if st.button("✅", key=f"conf_{chat['id']}", help="Confirm Delete"):
-                        delete_conversation(chat["id"])
-                        if st.session_state.current_conv_id == chat["id"]:
-                            st.session_state.current_conv_id = str(uuid.uuid4())
-                            st.session_state.messages = []
-                            st.session_state.last_metrics = None
-                        st.session_state.delete_id = None
-                        st.rerun()
-                with c2:
-                    if st.button("❌", key=f"canc_{chat['id']}", help="Cancel"):
-                        st.session_state.delete_id = None
-                        st.rerun()
-            else:
-                if st.button("🗑️", key=f"del_{chat['id']}", help="Delete Conversation"):
-                    st.session_state.delete_id = chat["id"]
+        saved_chats = get_saved_conversations()
+        if not saved_chats:
+            st.info("No saved conversations.")
+        
+        for chat in saved_chats:
+            col1, col2 = st.columns([0.7, 0.3])
+            with col1:
+                if st.button(chat["title"], key=f"load_{chat['id']}", use_container_width=True):
+                    with open(os.path.join(CONV_DIR, f"{chat['id']}.json"), "r") as f:
+                        data = json.load(f)
+                        st.session_state.current_conv_id = chat["id"]
+                        st.session_state.messages = data["messages"]
+                        st.session_state.last_metrics = data.get("metrics")
                     st.rerun()
+            with col2:
+                if st.session_state.delete_id == chat["id"]:
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        if st.button("✅", key=f"conf_{chat['id']}", help="Confirm Delete"):
+                            delete_conversation(chat["id"])
+                            if st.session_state.current_conv_id == chat["id"]:
+                                st.session_state.current_conv_id = str(uuid.uuid4())
+                                st.session_state.messages = []
+                                st.session_state.last_metrics = None
+                            st.session_state.delete_id = None
+                            st.rerun()
+                    with c2:
+                        if st.button("❌", key=f"canc_{chat['id']}", help="Cancel"):
+                            st.session_state.delete_id = None
+                            st.rerun()
+                else:
+                    if st.button("🗑️", key=f"del_{chat['id']}", help="Delete Conversation"):
+                        st.session_state.delete_id = chat["id"]
+                        st.rerun()
 
 # --- MAIN PANEL: CHAT ---
 with main_col:
-    st.title("MCP Tool-Calling Workflow")
-    
+    #st.title("MCP Tool-Calling Workflow")
+    st.markdown("<div id='top'></div>", unsafe_allow_html=True)
     if "mcp_client" not in st.session_state:
         try:
             mcp = MCPClient()
@@ -315,7 +317,8 @@ with main_col:
     # Display performance metrics for the last interaction
     if "last_metrics" in st.session_state and st.session_state.last_metrics:
         st.divider()
-        st.markdown(f"***{st.session_state.last_metrics}***")
+        st.markdown(f"***{st.session_state.last_metrics}*** [↑ Back to Top](#top)")
+        #st.markdown("[↑ Back to Top](#top)")
 
 # Chat input
 if prompt := st.chat_input("Ask a question that might use tools..."):

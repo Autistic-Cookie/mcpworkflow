@@ -92,12 +92,17 @@ class MCPClient:
         self.responses[req_id] = queue.Queue()
         
         # Send via POST
-        httpx.post(self.post_url, json=payload)
-        
+        try:
+            httpx.post(self.post_url, json=payload)
+            response = self.responses[req_id].get(timeout=30)
+        finally:
+            # This ensures the ID is deleted even if timeout or error occurs
+            if req_id in self.responses:
+                del self.responses[req_id]
+        #httpx.post(self.post_url, json=payload)
         # Wait for response from SSE
-        response = self.responses[req_id].get(timeout=30)
-        del self.responses[req_id]
-        
+        #response = self.responses[req_id].get(timeout=30)
+        #del self.responses[req_id]
         if "error" in response:
             raise Exception(f"MCP Error: {response['error']}")
         return response.get("result")
