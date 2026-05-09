@@ -87,6 +87,30 @@ def delete_conversation(conv_id):
 
 st.set_page_config(page_title="MCP Tool-Calling Demo", layout="wide")
 
+# Custom CSS to cap button height to one line
+st.markdown("""
+<style>
+    /* Target all Streamlit buttons */
+    button[data-testid="baseButton-secondary"],
+    button[data-testid="baseButton-primary"],
+    button[data-testid="baseButton-tertiary"],
+    button[data-testid="stChatInputSubmitButton"],
+    div.stButton > button {
+        height: 2.2rem !important;
+        min-height: 2.2rem !important;
+        max-height: 2.2rem !important;
+        padding-top: 0px !important;
+        padding-bottom: 0px !important;
+        line-height: 2.2rem !important;
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        overflow: hidden !important;
+        white-space: nowrap !important;
+    }
+</style>
+""", unsafe_allow_html=True)
+
 # Load persistent settings
 settings = load_settings()
 
