@@ -111,27 +111,27 @@ st.markdown("""
     }
 
     /* Position popover inside chat input */
-    [data-testid="stChatInput"] {
+   /* [data-testid="stChatInput"] {*/
         /* padding-left: 45px !important; */
         /*padding-left: 0px !important;*/
-        top:780%;
-    }
+     /*   top:780%;
+    }*/
     
     /* Target the popover container specifically when inside our input area */
-    div.upload-container {
+   /* div.upload-container {*/
         /*position: fixed;*/
-        padding-left:100px;
+        /*padding-left:100px;*/
         /*left: calc(10% );*/ /* Adjust based on sidebar width (15%) and padding */
         /*z-index: 100;*/
         /*width: 40px;*/
-    }
+   /* }*/
 
-    @media (max-width: 68px) {
+   /* @media (max-width: 68px) {
         div.upload-container {
             bottom: 2px;
         padding-left:100px;
         }
-    }
+    }*/
 </style>
 """, unsafe_allow_html=True)
 
@@ -375,12 +375,11 @@ with main_col:
         #st.markdown("[↑ Back to Top](#top)")
 
 # Chat input and File Upload
-with main_col:
-    prompt = st.chat_input("Ask a question that might use tools...")
+prompt = st.chat_input("Ask a question that might use tools...")
     # Use a div container for the upload button to position it via CSS
     #st.markdown('<div class="upload-container">', unsafe_allow_html=True)
-    with st.popover("📎", help="Upload files for context",type="tertiary"):
-        uploaded_files = st.file_uploader("Upload files", accept_multiple_files=True, key="file_uploader")
+with st.popover("📎", help="Upload files for context",type="tertiary"):
+    uploaded_files = st.file_uploader("Upload files", accept_multiple_files=True, key="file_uploader")
     #st.markdown('</div>', unsafe_allow_html=True)
     
 if prompt:
