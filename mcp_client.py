@@ -13,6 +13,7 @@ class MCPClient:
         self.responses = {} # Map request_id to Queue
         self._sse_thread = None
         self._stop_event = threading.Event()
+        self._lock = threading.Lock()
 
     def connect(self):
         # 1. Start SSE connection in background thread
@@ -69,8 +70,9 @@ class MCPClient:
                                 data = json.loads(data_content)
                                 if "id" in data:
                                     req_id = str(data["id"])
-                                    if req_id in self.responses:
-                                        self.responses[req_id].put(data)
+                                    with self._lock:
+                                        if req_id in self.responses:
+                                            self.responses[req_id].put(data)
                             except json.JSONDecodeError:
                                 print(f"DEBUG: Failed to decode message data: {data_content}")
                         
@@ -89,7 +91,8 @@ class MCPClient:
             "method": method,
             "params": params
         }
-        self.responses[req_id] = queue.Queue()
+        with self._lock:
+            self.responses[req_id] = queue.Queue()
         
         # Send via POST
         try:
