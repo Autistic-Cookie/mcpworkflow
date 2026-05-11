@@ -85,6 +85,68 @@ def delete_conversation(conv_id):
     if os.path.exists(path):
         os.remove(path)
 
+# --- Local Tools Implementation ---
+def local_tool_read_local_file(path):
+    """Read the content of a local file or list contents of a directory."""
+    try:
+        if not os.path.exists(path):
+            return {"error": f"File not found: {path}"}
+        
+        if os.path.isdir(path):
+            try:
+                items = os.listdir(path)
+                details = []
+                for item in items:
+                    item_path = os.path.join(path, item)
+                    is_dir = os.path.isdir(item_path)
+                    size = os.path.getsize(item_path) if not is_dir else 0
+                    details.append({
+                        "name": item,
+                        "type": "directory" if is_dir else "file",
+                        "size_bytes": size
+                    })
+                return {
+                    "path": path,
+                    "type": "directory",
+                    "contents": details
+                }
+            except Exception as e:
+                return {"error": f"Failed to list directory: {str(e)}"}
+        
+        file_size = os.path.getsize(path)
+        limit = 100 * 1024 # 100KB limit
+        
+        if file_size > limit:
+            with open(path, 'rb') as f:
+                f.seek(-limit, os.SEEK_END)
+                content = f.read().decode('utf-8', errors='replace')
+                return {
+                    "content": content, 
+                    "warning": f"File is large ({file_size/1024:.1f}KB). Read only the last 100KB."
+                }
+        
+        with open(path, 'r', encoding='utf-8', errors='replace') as f:
+            return {"content": f.read()}
+    except Exception as e:
+        return {"error": str(e)}
+
+LOCAL_TOOLS_METADATA = [
+    {
+        "name": "read_local_file",
+        "description": "Read the contents of a local file OR list the contents of a directory on the HOST machine. This tool accesses the host filesystem directly, NOT the MCP sandbox. Use it to explore the workspace, read logs, or view source code.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "The absolute or relative path to the file or directory."
+                }
+            },
+            "required": ["path"]
+        }
+    }
+]
+
 st.set_page_config(page_title="MCP Tool-Calling Demo", layout="wide")
 
 # Custom CSS to cap button height to one line
@@ -249,13 +311,13 @@ with st.sidebar:
                 save_settings(prompts, selected_idx, settings.get("enabled_tools"), tool_calling_enabled)
 # --- history_tab: CONVERSATION HISTORY ---
     with history_tab:
-        st.header("📜 Past Chats")
         if st.button("➕ New Chat", use_container_width=True,type="tertiary"):
             st.session_state.current_conv_id = str(uuid.uuid4())
             st.session_state.messages = []
             st.session_state.last_metrics = None
             st.rerun()
 
+        st.header("📜 Past Chats")
         st.divider()
         saved_chats = get_saved_conversations()
         if not saved_chats:
@@ -299,14 +361,14 @@ with main_col:
     if "mcp_client" not in st.session_state:
         try:
             mcp = MCPClient()
-            tools = mcp.connect()
+            mcp_tools = mcp.connect()
             st.session_state.mcp_client = mcp
-            st.session_state.tools = tools
+            st.session_state.tools = mcp_tools + LOCAL_TOOLS_METADATA
             st.success(f"Connected to MCP server.")
         except Exception as e:
             st.error(f"Failed to connect to MCP server: {e}")
             st.session_state.mcp_client = None
-            st.session_state.tools = []
+            st.session_state.tools = LOCAL_TOOLS_METADATA
 
     if "llm_client" not in st.session_state:
         st.session_state.llm_client = LLMClient()
@@ -386,6 +448,7 @@ if prompt:
     # Track performance metrics
     start_time = time.time()
     total_tokens = 0
+    completion_tokens = 0
     
     with main_col:
         with st.chat_message("user"):
@@ -431,22 +494,24 @@ if prompt:
                                 has_llm_error = True
                                 break
                             
-                            if not chunk.get("choices"): continue
-
                             # Update metrics
                             if "usage" in chunk and chunk["usage"]:
                                 total_tokens = chunk["usage"].get("total_tokens", total_tokens)
-                            else:
-                                # Estimate tokens: content or reasoning chunk usually = 1 token
+                                completion_tokens = chunk["usage"].get("completion_tokens", completion_tokens)
+                            
+                            if chunk.get("choices"):
                                 delta = chunk["choices"][0].get("delta", {})
                                 if delta.get("content") or delta.get("reasoning_content"):
-                                    total_tokens += 1
+                                    completion_tokens += 1
+                                    if "usage" not in chunk:
+                                        total_tokens += 1
                             
                             elapsed = time.time() - start_time
-                            tps = total_tokens / elapsed if elapsed > 0 else 0
+                            tps = completion_tokens / elapsed if elapsed > 0 else 0
                             st.session_state.last_metrics = f"⏱️ {elapsed:.1f}s | 🚀 {tps:.1f} t/s | 📦 {total_tokens} tokens"
                             metrics_placeholder.markdown(f"***{st.session_state.last_metrics}***")
 
+                            if not chunk.get("choices"): continue
                             delta = chunk["choices"][0].get("delta", {})
                             
                             if "reasoning_content" in delta:
@@ -503,7 +568,11 @@ if prompt:
                                 args = json.loads(tc["function"]["arguments"])
                                 st.info(f"Executing: `{tool_name}`")
                                 try:
-                                    tool_result = st.session_state.mcp_client.call_tool(tool_name, args)
+                                    if tool_name == "read_local_file":
+                                        tool_result = local_tool_read_local_file(**args)
+                                    else:
+                                        tool_result = st.session_state.mcp_client.call_tool(tool_name, args)
+                                    
                                     st.session_state.messages.append({
                                         "role": "tool",
                                         "tool_call_id": tc.get("id"),
