@@ -5,7 +5,7 @@ class LLMClient:
     def __init__(self, base_url="http://localhost:8080"):
         self.base_url = base_url
 
-    def stream_chat_completion(self, messages, tools=None):
+    def stream_chat_completion(self, messages, tools=None, **kwargs):
         url = f"{self.base_url}/v1/chat/completions"
         
         formatted_tools = []
@@ -28,7 +28,8 @@ class LLMClient:
             "model": "gpt-3.5-turbo",
             "tools": formatted_tools if formatted_tools else None,
             "tool_choice": "auto" if formatted_tools else None,
-            "stream": True
+            "stream": True,
+            **kwargs
         }
         
         try:

@@ -9,6 +9,14 @@ from llm_client import LLMClient
 SETTINGS_FILE = "settings.json"
 CONV_DIR = "conversations"
 
+DEFAULT_LLM_PARAMS = {
+    "temperature": 0.7,
+    "max_tokens": 2048,
+    "top_p": 1.0,
+    "frequency_penalty": 0.0,
+    "presence_penalty": 0.0
+}
+
 if not os.path.exists(CONV_DIR):
     os.makedirs(CONV_DIR)
 
@@ -31,6 +39,14 @@ def load_settings():
                 
                 if "tool_calling_enabled" not in data:
                     data["tool_calling_enabled"] = True
+                
+                if "llm_params" not in data:
+                    data["llm_params"] = DEFAULT_LLM_PARAMS.copy()
+                else:
+                    # Ensure all default keys exist
+                    for k, v in DEFAULT_LLM_PARAMS.items():
+                        if k not in data["llm_params"]:
+                            data["llm_params"][k] = v
                 return data
         except:
             pass
@@ -38,16 +54,18 @@ def load_settings():
         "system_prompts": default_prompts,
         "selected_prompt_index": 0,
         "enabled_tools": None,
-        "tool_calling_enabled": True
+        "tool_calling_enabled": True,
+        "llm_params": DEFAULT_LLM_PARAMS.copy()
     }
 
-def save_settings(prompts, selected_index, tools, tool_calling_enabled):
+def save_settings(prompts, selected_index, tools, tool_calling_enabled, llm_params):
     with open(SETTINGS_FILE, "w") as f:
         json.dump({
             "system_prompts": prompts,
             "selected_prompt_index": selected_index,
             "enabled_tools": tools,
-            "tool_calling_enabled": tool_calling_enabled
+            "tool_calling_enabled": tool_calling_enabled,
+            "llm_params": llm_params
         }, f)
 
 def get_saved_conversations():
@@ -147,7 +165,7 @@ LOCAL_TOOLS_METADATA = [
     }
 ]
 
-st.set_page_config(page_title="MCP Tool-Calling Demo", layout="wide")
+st.set_page_config(page_title="MCP Tool-Calling", layout="wide")
 
 # Custom CSS to cap button height to one line
 st.markdown("""
@@ -212,19 +230,18 @@ main_col, history_col = st.columns([0.85, 0.15])
 
 # Sidebar for tool information and filtering
 with st.sidebar:
+    # Common variables used across tabs
+    prompts = settings["system_prompts"]
+    sel_idx = settings["selected_prompt_index"]
+    if sel_idx >= len(prompts): sel_idx = 0
 
-    settings_tab, history_tab = st.tabs(["Settings","History"])
+    settings_tab, history_tab, params_tab = st.tabs(["Settings", "History", "Parameters"])
 
     with settings_tab:
         st.header("LLM Configuration")
         
         # --- System Prompt Manager ---
         st.subheader("System Prompts")
-        prompts = settings["system_prompts"]
-        sel_idx = settings["selected_prompt_index"]
-        
-        # Ensure index is valid
-        if sel_idx >= len(prompts): sel_idx = 0
         
         # Choose Prompt
         selected_idx = st.selectbox(
@@ -247,23 +264,23 @@ with st.sidebar:
         with c1:
             if st.button("➕ New", help="Add new preset",type="tertiary"):
                 prompts.append("You are a helpful assistant.")
-                save_settings(prompts, len(prompts)-1, settings["enabled_tools"], settings["tool_calling_enabled"])
+                save_settings(prompts, len(prompts)-1, settings["enabled_tools"], settings["tool_calling_enabled"], settings.get("llm_params", DEFAULT_LLM_PARAMS))
                 st.rerun()
         with c2:
             if st.button("💾 Save", help="Save changes to current preset",type="tertiary"):
                 prompts[selected_idx] = current_sys_prompt
-                save_settings(prompts, selected_idx, settings["enabled_tools"], settings["tool_calling_enabled"])
+                save_settings(prompts, selected_idx, settings["enabled_tools"], settings["tool_calling_enabled"], settings.get("llm_params", DEFAULT_LLM_PARAMS))
                 st.toast("Preset updated!", icon="✅")
         with c3:
             if st.button("🗑️ Del", help="Delete current preset",type="tertiary") and len(prompts) > 1:
                 del prompts[selected_idx]
                 new_idx = max(0, selected_idx - 1)
-                save_settings(prompts, new_idx, settings["enabled_tools"], settings["tool_calling_enabled"])
+                save_settings(prompts, new_idx, settings["enabled_tools"], settings["tool_calling_enabled"], settings.get("llm_params", DEFAULT_LLM_PARAMS))
                 st.rerun()
 
         # Handle dropdown change
         if selected_idx != sel_idx:
-            save_settings(prompts, selected_idx, settings.get("enabled_tools"), settings.get("tool_calling_enabled"))
+            save_settings(prompts, selected_idx, settings.get("enabled_tools"), settings.get("tool_calling_enabled"), settings.get("llm_params", DEFAULT_LLM_PARAMS))
             st.rerun()
         
         st.divider()
@@ -291,7 +308,7 @@ with st.sidebar:
 
             if (current_enabled_tools != settings.get("enabled_tools") or
                 tool_calling_enabled != settings.get("tool_calling_enabled")):
-                save_settings(prompts, selected_idx, current_enabled_tools, tool_calling_enabled)
+                save_settings(prompts, selected_idx, current_enabled_tools, tool_calling_enabled, settings.get("llm_params", DEFAULT_LLM_PARAMS))
 
             if tool_calling_enabled:
                 active_tools = [t for t in st.session_state.tools if t['name'] in current_enabled_tools]
@@ -308,7 +325,7 @@ with st.sidebar:
             st.info("No tools loaded.")
             active_tools = []
             if tool_calling_enabled != settings.get("tool_calling_enabled"):
-                save_settings(prompts, selected_idx, settings.get("enabled_tools"), tool_calling_enabled)
+                save_settings(prompts, selected_idx, settings.get("enabled_tools"), tool_calling_enabled, settings.get("llm_params", DEFAULT_LLM_PARAMS))
 # --- history_tab: CONVERSATION HISTORY ---
     with history_tab:
         if st.button("➕ New Chat", use_container_width=True,type="tertiary"):
@@ -353,6 +370,29 @@ with st.sidebar:
                     if st.button("🗑️", key=f"del_{chat['id']}", help="Delete Conversation",type="tertiary"):
                         st.session_state.delete_id = chat["id"]
                         st.rerun()
+
+    with params_tab:
+        st.header("LLM Parameters")
+        
+        current_params = settings.get("llm_params", DEFAULT_LLM_PARAMS.copy())
+        
+        temp = st.slider("Temperature", 0.0, 2.0, float(current_params.get("temperature", 0.7)), 0.1)
+        max_t = st.number_input("Max Tokens", 1, 65536, int(current_params.get("max_tokens", 2048)), 128)
+        top_p = st.slider("Top P", 0.0, 1.0, float(current_params.get("top_p", 1.0)), 0.05)
+        freq_p = st.slider("Frequency Penalty", -2.0, 2.0, float(current_params.get("frequency_penalty", 0.0)), 0.1)
+        pres_p = st.slider("Presence Penalty", -2.0, 2.0, float(current_params.get("presence_penalty", 0.0)), 0.1)
+        
+        new_params = {
+            "temperature": temp,
+            "max_tokens": max_t,
+            "top_p": top_p,
+            "frequency_penalty": freq_p,
+            "presence_penalty": pres_p
+        }
+        
+        if new_params != current_params:
+            save_settings(prompts, selected_idx, settings.get("enabled_tools"), settings.get("tool_calling_enabled"), new_params)
+            st.rerun()
 
 # --- MAIN PANEL: CHAT ---
 with main_col:
@@ -476,6 +516,7 @@ if prompt:
                         
                         r_placeholder = st.empty()
                         c_placeholder = st.empty()
+                        tc_placeholder = st.empty()
 
                         st.session_state.partial_msg = {
                             "role": "assistant",
@@ -486,7 +527,8 @@ if prompt:
 
                         has_llm_error = False
                         error_msg = ""
-                        for chunk in st.session_state.llm_client.stream_chat_completion(full_messages, active_tools):
+                        llm_params = settings.get("llm_params", DEFAULT_LLM_PARAMS)
+                        for chunk in st.session_state.llm_client.stream_chat_completion(full_messages, active_tools, **llm_params):
                             if "error" in chunk:
                                 error_msg = chunk["error"]
                                 # Persist error for display after rerun
@@ -538,7 +580,7 @@ if prompt:
                                         tool_calls_map[index]["function"]["name"] += f_delta["name"]
                                     if f_delta.get("arguments"):
                                         tool_calls_map[index]["function"]["arguments"] += f_delta["arguments"]
-                            
+                                    tc_placeholder.markdown(tool_calls_map.values())                            
                             st.session_state.partial_msg = {
                                 "role": "assistant",
                                 "content": content,
@@ -582,6 +624,7 @@ if prompt:
                                     st.success(f"Result from `{tool_name}`: Success")
                                     with st.expander("View Tool Output", expanded=True):
                                         st.json(tool_result)
+                                    print(tool_result)
                                 except Exception as e:
                                     st.error(f"Tool Error: {e}")
                                     st.session_state.messages.append({
